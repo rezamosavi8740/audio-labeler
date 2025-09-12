@@ -1,0 +1,14 @@
+# --- GUI Framework ---
+PySide6==6.7.2        # Qt6 bindings for Python (UI, Multimedia, etc.)
+pyqtgraph==0.13.7     # Fast waveform/spectrogram plotting with Qt
+
+# --- Audio Handling ---
+soundfile==0.12.1     # Read/write WAV, FLAC, etc. (libsndfile backend)
+librosa==0.10.2.post1 # Audio analysis, features, spectrograms
+pydub==0.25.1         # High-level audio manipulation (FFmpeg backend)
+
+# --- Data & Validation ---
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.2.2
+pydantic==2.9.2
