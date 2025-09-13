@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 
 from code.ui.pages.home import HomePage
 from code.ui.pages.sample_types import SampleTypesPage
+from code.ui.pages.new_sample import NewSamplePage
 from code.ui.styles import app_qss
 
 
@@ -17,30 +18,40 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Audio Labeler")
         self.resize(1100, 700)
 
-        # Central router: QStackedWidget
+        # ✅ central router
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        # Instantiate pages
+        # ✅ instantiate pages
         self.home = HomePage()
+        self.page_new = NewSamplePage()
         self.page_specs = SampleTypesPage()
 
-        # Add pages to stack
+        # ✅ add pages to stack
         self.stack.addWidget(self.home)
+        self.stack.addWidget(self.page_new)
         self.stack.addWidget(self.page_specs)
 
-        # Navigation: Home -> Sample Types
+        # ✅ navigation wiring
+        self.home.sig_new_sample.connect(lambda: self.stack.setCurrentWidget(self.page_new))
+        self.page_new.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.home))
+        self.page_new.sig_go_step2.connect(self._go_step2)
+
         self.home.sig_sample_types.connect(lambda: self.stack.setCurrentWidget(self.page_specs))
-        # Navigation: Sample Types -> Home
         self.page_specs.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.home))
 
-        # Apply global stylesheet
+        # ✅ global stylesheet
         self.setStyleSheet(app_qss)
+
+    def _go_step2(self, sample_id: str):
+        # TODO: navigate to Step 2 page when implemented.
+        print("[DEBUG] Go to Step 2 for:", sample_id)
+        self.stack.setCurrentWidget(self.home)
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setLayoutDirection(Qt.LeftToRight)  # UI direction
+    app.setLayoutDirection(Qt.LeftToRight)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

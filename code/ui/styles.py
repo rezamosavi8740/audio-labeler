@@ -112,3 +112,57 @@ QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
 }
 QScrollBar::handle:hover { background: #5c6580; }
 """
+
+
+app_qss += """
+/* ====== Form inputs (LineEdit / DateEdit / TimeEdit) ====== */
+QLineEdit, QDateEdit, QTimeEdit {
+    background: #2a2f3b;
+    color: #e8ecf4;
+    border: 1px solid #3a4252;
+    border-radius: 10px;
+    padding: 8px 10px;
+    min-height: 32px;
+}
+QLineEdit:focus, QDateEdit:focus, QTimeEdit:focus {
+    border: 1px solid #42a5f5;
+    background: #2f3543;
+}
+QLineEdit::placeholder {
+    color: #8d97ad;
+}
+
+/* Labels in QFormLayout look nicer */
+QFormLayout > * {
+    font-size: 14px;
+}
+QLabel.formLabel {
+    color: #cbd5e1;
+    font-weight: 600;
+    margin-right: 10px;
+}
+
+/* Primary action button (we already have variants, keep this for bottom-right) */
+QPushButton.ctaPrimary {
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-weight: 700;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #42a5f5, stop:1 #1e88e5);
+    color: #ffffff;
+}
+QPushButton.ctaPrimary:hover { filter: brightness(1.06); }
+
+/* ====== Card (white container on dark bg) ====== */
+QFrame#formCard {
+    background: #1f242e;
+    border: 1px solid #3a4252;
+    border-radius: 16px;
+}
+
+/* Small section subtitle */
+QLabel.subtle {
+    color: #9aa5b8;
+    font-size: 13px;
+    margin-bottom: 6px;
+}
+"""
