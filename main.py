@@ -1,5 +1,4 @@
 # main.py
-# English comments included.
 # Application entry point — hosts a QStackedWidget (router) and wires up pages.
 
 import sys
@@ -12,7 +11,8 @@ from code.ui.pages.new_sample import NewSamplePage
 from code.ui.pages.sample_types import SampleTypesPage
 from code.ui.pages.label_editor import LabelEditorPage
 from code.ui.pages.edit_hub import EditHubPage
-from code.ui.pages.csv_reports import CsvReportsPage   # ← NEW
+from code.ui.pages.csv_reports import CsvReportsPage
+from code.ui.pages.labels_picker import LabelsPickerPage
 from code.ui.styles import app_qss
 
 
@@ -21,7 +21,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Audio Labeler")
-        # A compact default size that fits all toolbars without needing fullscreen
         self.resize(1200, 740)
         self.setMinimumSize(980, 600)
 
@@ -31,11 +30,12 @@ class MainWindow(QMainWindow):
 
         # --- Instantiate pages ---
         self.page_home    = HomePage()          # Home (4 cards)
-        self.page_new     = NewSamplePage()     # Step 1: metadata (supports create/edit)
-        self.page_specs   = SampleTypesPage()   # Sample Types & Specs (CSV editable)
+        self.page_new     = NewSamplePage()     # Step 1: metadata (create/edit)
+        self.page_specs   = SampleTypesPage()   # Sample Types & Specs
         self.page_labels  = LabelEditorPage()   # Step 2: attach & label
         self.page_edit    = EditHubPage()       # Hub for editing existing samples
         self.page_reports = CsvReportsPage()    # CSV Reports (export)
+        self.page_pick    = LabelsPickerPage()  # Picker for per-sample label CSVs
 
         # --- Add pages to router ---
         for p in (
@@ -45,45 +45,41 @@ class MainWindow(QMainWindow):
             self.page_labels,
             self.page_edit,
             self.page_reports,
+            self.page_pick,
         ):
             self.stack.addWidget(p)
 
         # --- Navigation wiring ---
 
-        # Home -> Step 1 (new)
+        # Home
         self.page_home.sig_new_sample.connect(lambda: self.stack.setCurrentWidget(self.page_new))
-
-        # Home -> Sample Types & Specs
         self.page_home.sig_sample_types.connect(lambda: self.stack.setCurrentWidget(self.page_specs))
-
-        # Home -> Edit hub
         self.page_home.sig_edit_sample.connect(self._open_edit_hub)
-
-        # Home -> CSV Reports
         self.page_home.sig_csv_reports.connect(self._open_csv_reports)
 
-        # Step 1 -> Home
+        # Step 1 (NewSamplePage)
         self.page_new.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
+        self.page_new.sig_go_step2.connect(self._go_step2)  # open label editor for created sample_id
 
-        # Step 1 finished -> open Step 2 for that sample_id
-        self.page_new.sig_go_step2.connect(self._go_step2)
-
-        # Specs -> Home
+        # Sample Types
         self.page_specs.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
 
-        # Step 2 -> Home (Back button)
+        # Label Editor
         self.page_labels.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
 
-        # Edit hub -> Home
+        # Edit Hub
         self.page_edit.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
-
-        # Edit hub -> Metadata (open Step 1 in edit mode)
         self.page_edit.sig_edit_metadata.connect(self._open_edit_metadata)
+        self.page_edit.sig_edit_labels.connect(self._open_edit_labels)  # opens picker
+        # optional: add sample to metadata (jump to editor and immediately attach WAV)
+        if hasattr(self.page_edit, "sig_add_sample_to_metadata"):
+            self.page_edit.sig_add_sample_to_metadata.connect(self._open_labels_and_attach)
 
-        # Edit hub -> Labels (open Step 2)
-        self.page_edit.sig_edit_labels.connect(self._open_edit_labels)
+        # Labels Picker
+        self.page_pick.sig_go_back.connect(lambda: self.stack.setCurrentWidget(self.page_edit))
+        self.page_pick.sig_open_labels.connect(self._open_labels_existing)
 
-        # Reports -> Home
+        # Reports
         self.page_reports.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
 
         # --- Global stylesheet ---
@@ -91,27 +87,37 @@ class MainWindow(QMainWindow):
 
     # -------- Handlers --------
     def _go_step2(self, sample_id: str):
-        """Prepare and navigate to label editor for the given sample_id."""
+        """Prepare and navigate to label editor for the given sample_id (fresh session)."""
         self.page_labels.open_for(sample_id)
         self.stack.setCurrentWidget(self.page_labels)
 
     def _open_edit_hub(self):
         """Open EditHub and refresh its view."""
-        # Ensure EditHub has the optional public `open()` to refresh search/table.
         if hasattr(self.page_edit, "open"):
             self.page_edit.open()
         self.stack.setCurrentWidget(self.page_edit)
 
     def _open_edit_metadata(self, sample_id: str):
         """Open Step 1 in edit mode for the chosen sample_id."""
-        # Your NewSamplePage should expose open_for_edit(sample_id: str)
         self.page_new.open_for_edit(sample_id)
         self.stack.setCurrentWidget(self.page_new)
 
     def _open_edit_labels(self, sample_id: str):
-        """Open Step 2 (Label Editor) for the chosen sample_id."""
+        """Open labels picker for this metadata (choose one of {sample_id}__*.csv)."""
+        self.page_pick.open_for(sample_id)
+        self.stack.setCurrentWidget(self.page_pick)
+
+    def _open_labels_existing(self, sample_id: str, csv_path: str):
+        """Open editor with an existing labels CSV path."""
+        self.page_labels.open_existing(sample_id, csv_path)
+        self.stack.setCurrentWidget(self.page_labels)
+
+    def _open_labels_and_attach(self, sample_id: str):
+        """Open editor for metadata and immediately prompt to attach WAV(s)."""
         self.page_labels.open_for(sample_id)
         self.stack.setCurrentWidget(self.page_labels)
+        if hasattr(self.page_labels, "attach_new_wav_dialog"):
+            self.page_labels.attach_new_wav_dialog()
 
     def _open_csv_reports(self):
         """Open CSV Reports page and refresh both tabs."""
@@ -123,7 +129,7 @@ class MainWindow(QMainWindow):
 def main():
     """Bootstraps the Qt application and shows the MainWindow."""
     app = QApplication(sys.argv)
-    app.setLayoutDirection(Qt.LeftToRight)  # change to RightToLeft if needed
+    app.setLayoutDirection(Qt.LeftToRight)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

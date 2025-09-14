@@ -1,50 +1,44 @@
 # code/ui/pages/edit_hub.py
-# Edit hub: search by id/name (press Enter), open edit pages, and delete metadata + related CSVs.
+# Edit hub: pick a metadata row, then jump to edit metadata / edit labels,
+# or add new WAV(s) to that metadata (open label editor in attach mode).
 
 from pathlib import Path
-from typing import List
+from datetime import datetime
 
 import pandas as pd
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableView, QMessageBox, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QLineEdit, QTableView, QMessageBox, QFrame
 )
 
 from code.ui.widgets.pandas_model import PandasModel
 
-# Project paths
-DATA_DIR = Path.cwd() / "data"
-META_CSV = DATA_DIR / "samples_meta.csv"
-LABELS_DIR = DATA_DIR / "labels"
-
+DATA_DIR     = Path.cwd() / "data"
+META_CSV     = DATA_DIR / "samples_meta.csv"
 
 class EditHubPage(QWidget):
-    """Lists samples from samples_meta.csv, supports search, open, and delete."""
-
-    # Navigation signals
     sig_go_home = Signal()
-    sig_edit_metadata = Signal(str)   # emits sample_id
-    sig_edit_labels = Signal(str)     # emits sample_id
+    sig_edit_metadata = Signal(str)            # sample_id
+    sig_edit_labels   = Signal(str)            # sample_id
+    sig_add_sample_to_metadata = Signal(str)   # sample_id  (NEW)
 
     def __init__(self):
         super().__init__()
 
-        # ---- top bar ----
+        # Top bar
         top = QHBoxLayout()
         self.btn_back = QPushButton("← Home")
         self.btn_back.setProperty("class", "back")
         self.btn_back.clicked.connect(self.sig_go_home.emit)
-
         title = QLabel("Edit — Pick a Sample")
         title.setProperty("class", "h1")
-
-        top.addWidget(self.btn_back, alignment=Qt.AlignLeft)
-        top.addWidget(title, alignment=Qt.AlignLeft)
+        top.addWidget(self.btn_back)
+        top.addWidget(title)
         top.addStretch()
 
-        # ---- toolbar (search + actions) ----
+        # Tool row
         tool_card = QFrame()
         tool_card.setObjectName("toolCard")
         tool = QHBoxLayout(tool_card)
@@ -53,39 +47,38 @@ class EditHubPage(QWidget):
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search by id or name…")
-        self.search.setClearButtonEnabled(True)
-        self.search.returnPressed.connect(self._do_search)  # Enter triggers search
-
         self.btn_reload = QPushButton("↻ Reload")
-        self.btn_reload.setProperty("variant", "soft")
-        self.btn_reload.clicked.connect(self._reload_all)
-
         self.btn_edit_meta = QPushButton("📝 Edit Metadata")
         self.btn_edit_meta.setProperty("variant", "primary")
-        self.btn_edit_meta.clicked.connect(self._open_edit_meta)
-
-        self.btn_edit_labels = QPushButton("🎛 Edit Labels")
+        self.btn_edit_labels = QPushButton("🎧 Edit Labels")
         self.btn_edit_labels.setProperty("variant", "accent")
-        self.btn_edit_labels.clicked.connect(self._open_edit_labels)
 
+        # NEW: add WAV(s) to selected metadata
+        self.btn_add_to_meta = QPushButton("➕ Add Sample to Metadata")
+        self.btn_add_to_meta.setProperty("variant", "success")
+
+        # Delete metadata(s)
         self.btn_delete = QPushButton("🗑 Delete")
         self.btn_delete.setProperty("variant", "danger")
-        self.btn_delete.clicked.connect(self._delete_selected)
+
+        for b in (self.btn_reload, self.btn_edit_meta, self.btn_edit_labels, self.btn_add_to_meta, self.btn_delete):
+            b.setMinimumHeight(32)
 
         tool.addWidget(self.search, 1)
         tool.addWidget(self.btn_reload)
         tool.addWidget(self.btn_edit_meta)
         tool.addWidget(self.btn_edit_labels)
+        tool.addWidget(self.btn_add_to_meta)   # << NEW
         tool.addWidget(self.btn_delete)
 
-        # ---- table ----
+        # Table
         self.table = QTableView()
         self.table.setSelectionBehavior(QTableView.SelectRows)
-        self.table.setSelectionMode(QTableView.ExtendedSelection)
+        self.table.setSelectionMode(QTableView.SingleSelection)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setDefaultSectionSize(32)
 
-        # ---- root ----
+        # Root
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(12)
@@ -93,160 +86,107 @@ class EditHubPage(QWidget):
         root.addWidget(tool_card)
         root.addWidget(self.table)
 
-        # state
-        self._df_full = pd.DataFrame()
-        self._model: PandasModel | None = None
+        # Wire
+        self.btn_reload.clicked.connect(self._reload)
+        self.btn_edit_meta.clicked.connect(self._emit_edit_meta)
+        self.btn_edit_labels.clicked.connect(self._emit_edit_labels)
+        self.btn_add_to_meta.clicked.connect(self._emit_add_to_meta)  # << NEW
+        self.btn_delete.clicked.connect(self._delete_selected)
 
-        # initial load
-        self._reload_all()
+        self.search.returnPressed.connect(self._apply_filter)
 
-    # ---------- data load / filter ----------
-    def _reload_all(self):
-        """Load full metadata CSV into the table."""
-        if META_CSV.exists():
-            try:
-                self._df_full = pd.read_csv(META_CSV, dtype=str, encoding="utf-8")
-            except Exception:
-                self._df_full = pd.DataFrame()
-        else:
-            self._df_full = pd.DataFrame()
+        # State
+        self._df = pd.DataFrame()
 
-        # Ensure useful columns exist and order them
-        cols_order = ["sample_id", "sample_name", "date", "time", "labels_csv", "created_at"]
-        for c in cols_order:
-            if c not in self._df_full.columns:
-                self._df_full[c] = ""
-        self._df_full = self._df_full[cols_order]
+    # ---------- public ----------
+    def open(self):
+        """Load/refresh on entering this page."""
+        self._reload()
 
-        self._apply_df_to_table(self._df_full)
+    # ---------- helpers ----------
+    def _reload(self):
+        try:
+            df = pd.read_csv(META_CSV, dtype=str, encoding="utf-8")
+        except Exception:
+            df = pd.DataFrame(columns=["sample_id", "sample_name", "date", "time", "labels_csv", "created_at"])
+        # Ensure columns and order
+        for c in ["sample_id", "sample_name", "date", "time", "labels_csv", "created_at"]:
+            if c not in df.columns:
+                df[c] = ""
+        self._df = df[["sample_id", "sample_name", "date", "time", "labels_csv", "created_at"]]
 
-    def _do_search(self):
-        """Filter by id or name using the search text; empty => show all."""
+        self._apply_filter()  # populates model
+
+    def _apply_filter(self):
         q = (self.search.text() or "").strip().lower()
         if not q:
-            self._apply_df_to_table(self._df_full)
-            return
+            dfv = self._df.copy()
+        else:
+            dfv = self._df[
+                self._df["sample_id"].str.lower().str.contains(q, na=False) |
+                self._df["sample_name"].str.lower().str.contains(q, na=False)
+            ].copy()
 
-        df = self._df_full.copy()
-        mask = (
-            df["sample_id"].astype(str).str.lower().str.contains(q, na=False)
-            | df["sample_name"].astype(str).str.lower().str.contains(q, na=False)
-        )
-        self._apply_df_to_table(df[mask].reset_index(drop=True))
-
-    def _apply_df_to_table(self, df: pd.DataFrame):
-        """Bind a dataframe to the table via PandasModel."""
-        self._model = PandasModel(df.reset_index(drop=True))
-        self.table.setModel(self._model)
+        self.model = PandasModel(dfv)
+        self.table.setModel(self.model)
         self.table.resizeColumnsToContents()
 
-    # ---------- selection helpers ----------
-    def _selected_sample_ids(self) -> List[str]:
-        if not self._model:
-            return []
-        rows = [ix.row() for ix in self.table.selectionModel().selectedRows()]
-        if not rows:
-            return []
-        df = self._model.dataframe()
-        return [str(df.loc[r, "sample_id"]) for r in rows]
-
-    def _safe_path_from_value(self, val):
-        """Return a valid Path if val looks like a non-empty path string; otherwise None."""
-        if val is None:
+    def _selected_sample_id(self) -> str | None:
+        sel = self.table.selectionModel().selectedRows()
+        if not sel:
+            QMessageBox.information(self, "Select", "Please select a metadata row first.")
             return None
-        # pandas missing values often come as float('nan')
-        if isinstance(val, float):
-            return None
-        s = str(val).strip()
-        if not s or s.lower() == "nan":
-            return None
-        return Path(s)
+        r = sel[0].row()
+        df_view = self.model.dataframe()
+        return str(df_view.loc[r, "sample_id"])
 
-    def open(self, query: str = "") -> None:
-        """Refresh table and optionally pre-fill the search box.
-        Called by MainWindow when navigating to this page."""
-        self._reload_all()          # reload full meta csv
-        self.search.setText(query)  # optional preset query
-        self._do_search()           # apply current search (or show all if empty)
-        self.search.setFocus()      # UX: focus search box
-        # Optionally select the first row for quick actions
-        if self.table.model() and self.table.model().rowCount() > 0:
-            self.table.selectRow(0)
+    def _emit_edit_meta(self):
+        sid = self._selected_sample_id()
+        if sid:
+            self.sig_edit_metadata.emit(sid)
 
-    # ---------- open actions ----------
-    def _open_edit_meta(self):
-        ids = self._selected_sample_ids()
-        if not ids:
-            QMessageBox.information(self, "Select", "Please select a row.")
-            return
-        self.sig_edit_metadata.emit(ids[0])
+    def _emit_edit_labels(self):
+        sid = self._selected_sample_id()
+        if sid:
+            self.sig_edit_labels.emit(sid)
 
-    def _open_edit_labels(self):
-        ids = self._selected_sample_ids()
-        if not ids:
-            QMessageBox.information(self, "Select", "Please select a row.")
-            return
-        self.sig_edit_labels.emit(ids[0])
+    def _emit_add_to_meta(self):
+        """Open label editor for this metadata and immediately ask user to attach WAV(s)."""
+        sid = self._selected_sample_id()
+        if sid:
+            self.sig_add_sample_to_metadata.emit(sid)
 
-    # ---------- delete ----------
     def _delete_selected(self):
-        """Delete selected rows from meta and remove all related CSVs on disk."""
-        if not self._model:
+        sel = self.table.selectionModel().selectedRows()
+        if not sel:
             return
+        rows = sorted([ix.row() for ix in sel])
+        df_view = self.model.dataframe()
+        sids = [str(df_view.loc[r, "sample_id"]) for r in rows]
 
-        rows = sorted([ix.row() for ix in self.table.selectionModel().selectedRows()], reverse=True)
-        if not rows:
-            QMessageBox.information(self, "Delete", "Please select one or more rows to delete.")
-            return
-
-        df_view = self._model.dataframe()
-        ids = [str(df_view.loc[r, "sample_id"]) for r in rows]
-
-        # Gather CSV files to delete (labels_csv column + canonical data/labels/{sample_id}.csv)
-        files_to_delete = []
-        if "labels_csv" in df_view.columns:
-            for r in rows:
-                p = self._safe_path_from_value(df_view.loc[r, "labels_csv"])
-                if p:
-                    files_to_delete.append(p)
-
-        for sid in ids:
-            files_to_delete.append((LABELS_DIR / f"{sid}.csv"))
-
-        # Deduplicate and keep only existing files
-        files_to_delete = [Path(s) for s in dict.fromkeys(map(str, files_to_delete))]
-        existing = [p for p in files_to_delete if p.exists()]
-
-        msg = (
-            f"You are about to delete:\n"
-            f"• {len(ids)} metadata row(s)\n"
-            f"• {len(existing)} CSV file(s) on disk\n\n"
-            "This cannot be undone. Continue?"
+        ret = QMessageBox.question(
+            self, "Confirm delete",
+            f"Delete {len(sids)} metadata row(s)?\n"
+            f"All linked label CSV files will also be removed.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
-        if QMessageBox.question(self, "Confirm Delete", msg, QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+        if ret != QMessageBox.Yes:
             return
 
-        # Delete files (ignore errors)
-        for f in existing:
-            try:
-                f.unlink(missing_ok=True)
-            except Exception:
-                pass
+        # Remove label CSV paths if present
+        for r in rows:
+            p = str(df_view.loc[r, "labels_csv"]) if "labels_csv" in df_view.columns else ""
+            if isinstance(p, str) and p.strip():
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-        # Remove from META_CSV by sample_id and save
-        if META_CSV.exists():
-            try:
-                df_all = pd.read_csv(META_CSV, dtype=str, encoding="utf-8")
-            except Exception:
-                df_all = pd.DataFrame()
-        else:
-            df_all = pd.DataFrame()
-
-        if not df_all.empty and "sample_id" in df_all.columns:
-            df_all = df_all[~df_all["sample_id"].astype(str).isin(ids)]
-            df_all.to_csv(META_CSV, index=False, encoding="utf-8")
-
-        # Refresh view (preserve current search)
-        self._reload_all()
-        self._do_search()
-        QMessageBox.information(self, "Deleted", "Selected items were removed.")
+        # Remove from META_CSV
+        try:
+            df_all = pd.read_csv(META_CSV, dtype=str, encoding="utf-8")
+        except Exception:
+            return
+        df_all = df_all[~df_all["sample_id"].astype(str).isin(sids)]
+        df_all.to_csv(META_CSV, index=False, encoding="utf-8")
+        self._reload()

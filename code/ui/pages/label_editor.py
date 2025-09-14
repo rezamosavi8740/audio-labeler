@@ -1,6 +1,6 @@
 # code/ui/pages/label_editor.py
 # Dark-mode Label Editor with waveform + spectrogram, CSV table,
-# play/pause with spacebar, and sample classes loaded from sample_list.csv.
+# per-WAV CSV files, save-prompt when switching audio, and spacebar play/pause.
 
 from pathlib import Path
 from datetime import datetime
@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
 )
 
 from code.ui.widgets.pandas_model import PandasModel
-
 
 # --- project dirs ---
 DATA_DIR = Path.cwd() / "data"
@@ -251,8 +250,7 @@ class LabelEditorPage(QWidget):
         self.table = QTableView()
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.ExtendedSelection)
-        theader = self.table.horizontalHeader()
-        theader.setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setDefaultSectionSize(32)
 
         # ---- splitter ----
@@ -310,6 +308,9 @@ class LabelEditorPage(QWidget):
         self._wav_data: np.ndarray | None = None
         self._wav_sr: int | None = None
 
+        self._dirty = False  # track unsaved edits
+
+        # playheads
         self._playhead_wave = pg.InfiniteLine(pos=0, angle=90, movable=False, pen=pg.mkPen("#2aa3ff", width=2))
         self.pg_wave.addItem(self._playhead_wave)
         self._playhead_spec = pg.InfiniteLine(pos=0, angle=90, movable=False, pen=pg.mkPen("#2aa3ff", width=2))
@@ -320,31 +321,49 @@ class LabelEditorPage(QWidget):
 
     # ===== public API =====
     def open_for(self, sample_id: str):
+        """Prepare editor for a metadata record. Actual CSV is selected when a WAV is attached."""
         self.sample_id = sample_id
         LABELS_DIR.mkdir(parents=True, exist_ok=True)
-        self.labels_csv_path = LABELS_DIR / f"{sample_id}.csv"
-        if not self.labels_csv_path.exists():
-            pd.DataFrame(columns=LABEL_COLUMNS).to_csv(self.labels_csv_path, index=False, encoding="utf-8")
-            self._sync_meta_link()
-        self._reload_labels()
+        self.labels_csv_path = None
+        self.model = None
+        self.table.setModel(None)
+        self._dirty = False
         self._load_classes()
-        self._apply_class_delegate()
         self.title.setText(f"Label Editor — Step 2 • {sample_id}")
 
     # ===== audio =====
     def _attach_audio(self):
+        # ask to save current CSV if it has unsaved edits
+        if not self._ask_save_if_dirty():
+            return
+
         path, _ = QFileDialog.getOpenFileName(self, "Attach WAV", str(Path.cwd()), "WAV Audio (*.wav)")
         if not path:
             return
+
         self.audio_path = Path(path)
         self.player.setSource(QUrl.fromLocalFile(str(self.audio_path)))
         self.player.play()
+
+        # choose CSV path for this audio (per-WAV file)
+        csv_path = self._labels_path_for_audio(self.audio_path)
+        self.labels_csv_path = csv_path
+        if not csv_path.exists():
+            pd.DataFrame(columns=LABEL_COLUMNS).to_csv(csv_path, index=False, encoding="utf-8")
+
+        # visuals
         try:
             self._load_wav_array(self.audio_path)
             self._render_waveform()
             self._render_spectrogram()
         except Exception as e:
             QMessageBox.warning(self, "Audio", f"Could not render waveform/spectrogram:\n{e}")
+
+        # load table for this CSV
+        self._reload_labels()
+
+        # write back "latest CSV" to META for this sample
+        self._sync_meta_latest(csv_path)
 
     def _toggle_play_pause(self):
         state = self.player.playbackState()
@@ -354,6 +373,29 @@ class LabelEditorPage(QWidget):
             if self.player.source().isEmpty():
                 return
             self.player.play()
+
+    def _labels_path_for_audio(self, wav_path: Path) -> Path:
+        """Return a unique CSV path for the current WAV under data/labels/."""
+        safe_stem = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in wav_path.stem)[:80]
+        name = f"{self.sample_id}__{safe_stem}.csv"
+        return LABELS_DIR / name
+
+    def _ask_save_if_dirty(self) -> bool:
+        """Ask user to save current CSV when switching audio. Returns False on Cancel."""
+        if not self._dirty or not self.labels_csv_path:
+            return True
+        ret = QMessageBox.question(
+            self,
+            "Save changes?",
+            f"Save changes to:\n{self.labels_csv_path.name}",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if ret == QMessageBox.Cancel:
+            return False
+        if ret == QMessageBox.Yes:
+            self._save_labels()
+        return True
 
     def _load_wav_array(self, wav_path: Path):
         data, sr = sf.read(str(wav_path), always_2d=False)
@@ -478,6 +520,7 @@ class LabelEditorPage(QWidget):
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
         self.model.insert_empty_row(row)
+        self._dirty = True
         self.line_start.clear()
         self.line_end.clear()
 
@@ -489,6 +532,7 @@ class LabelEditorPage(QWidget):
         if not sel:
             return
         self.model.remove_rows([ix.row() for ix in sel])
+        self._dirty = True
 
     # ===== CSV I/O =====
     def _reload_labels(self):
@@ -500,7 +544,6 @@ class LabelEditorPage(QWidget):
         except Exception:
             df = pd.DataFrame(columns=LABEL_COLUMNS)
 
-        # Ensure schema and column order
         for c in LABEL_COLUMNS:
             if c not in df.columns:
                 df[c] = ""
@@ -509,6 +552,12 @@ class LabelEditorPage(QWidget):
         self.model = PandasModel(df)
         self.table.setModel(self.model)
         self.table.resizeColumnsToContents()
+
+        # watch edits to set _dirty
+        self._dirty = False
+        self.model.dataChanged.connect(self._mark_dirty)
+        self.model.rowsInserted.connect(self._mark_dirty)
+        self.model.rowsRemoved.connect(self._mark_dirty)
         self._apply_class_delegate()
 
     def _save_labels(self):
@@ -516,21 +565,16 @@ class LabelEditorPage(QWidget):
         if not self.model or not self.labels_csv_path:
             return
         df = self.model.dataframe().copy()
-
-        # Normalize numeric fields
         for col in ("start_s", "end_s"):
             df[col] = pd.to_numeric(df[col], errors="coerce").round(3).astype(str)
+        df.to_csv(self.labels_csv_path, index=False, encoding="utf-8")
+        self._dirty = False
+        self._sync_meta_latest(self.labels_csv_path)
+        QMessageBox.information(self, "Saved", f"Saved labels:\n{self.labels_csv_path}")
 
-        try:
-            df.to_csv(self.labels_csv_path, index=False, encoding="utf-8")
-            self._sync_meta_link()
-            QMessageBox.information(self, "Saved", f"Saved labels:\n{self.labels_csv_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Save error", str(e))
-
-    def _sync_meta_link(self):
-        """Write labels CSV path back to META_CSV for this sample_id (column: labels_csv)."""
-        if not self.sample_id or not self.labels_csv_path:
+    def _sync_meta_latest(self, latest_csv: Path):
+        """Update META_CSV to point 'labels_csv' of this sample to the latest CSV path."""
+        if not self.sample_id:
             return
         if not META_CSV.exists():
             return
@@ -542,7 +586,7 @@ class LabelEditorPage(QWidget):
             df["labels_csv"] = ""
         mask = df["sample_id"].astype(str) == str(self.sample_id)
         if mask.any():
-            df.loc[mask, "labels_csv"] = str(self.labels_csv_path)
+            df.loc[mask, "labels_csv"] = str(latest_csv)
             df.to_csv(META_CSV, index=False, encoding="utf-8")
 
     # ===== classes from sample_list.csv =====
@@ -576,13 +620,55 @@ class LabelEditorPage(QWidget):
             return
         self.table.setItemDelegateForColumn(col_idx, ComboBoxDelegate(self._class_options, self.table))
 
-    # ===== UI helpers =====
+    # ===== misc UI helpers =====
     def _toggle_visuals(self):
         """Hide/show waveform+spectrogram area to give more space to the table."""
         vis = self.splitter.widget(0).isVisible()
-        self.splitter.widget(0).setVisible(not vis)  # <-- fixed (Python: 'not', not '!')
-        # Allocate sizes: when hidden, give almost all space to the table.
+        self.splitter.widget(0).setVisible(not vis)
         if vis:
             self.splitter.setSizes([0, 60, 1000])
         else:
             self.splitter.setSizes([220, 70, 700])
+
+    def attach_new_wav_dialog(self):
+        """Open file dialog to attach a WAV for the current metadata."""
+        if not self.sample_id:
+            QMessageBox.information(self, "Attach WAV", "Open a metadata first.")
+            return
+        self._attach_audio()
+    def attach_new_wav_dialog(self):
+        """Convenience: open file picker to attach a WAV right away."""
+        self._attach_audio()
+
+    def open_existing(self, sample_id: str, csv_path: str):
+        """Open an existing labels CSV (and try to load its audio for visuals)."""
+        self.sample_id = sample_id
+        self.labels_csv_path = Path(csv_path)
+        # Load table
+        self._reload_labels()
+        self._load_classes()
+        self.title.setText(f"Label Editor — Step 2 • {sample_id}")
+
+        # Try to detect an audio file from CSV
+        try:
+            df = self.model.dataframe() if self.model else None
+            audio = ""
+            if df is not None and "audio_path" in df.columns:
+                audio = next((str(x) for x in df["audio_path"].dropna().tolist() if str(x).strip()), "")
+            if audio and Path(audio).exists():
+                self.audio_path = Path(audio)
+                self.player.setSource(QUrl.fromLocalFile(audio))
+                self.player.pause()  # don't auto-play for existing session
+                self._load_wav_array(self.audio_path)
+                self._render_waveform()
+                self._render_spectrogram()
+            else:
+                # Ask user to attach a WAV if we couldn't resolve it
+                QMessageBox.information(self, "Attach audio",
+                                        "No valid audio path found in CSV. Please attach a WAV.")
+        except Exception:
+            pass
+
+    def _mark_dirty(self, *args, **kwargs):
+        """Flag current CSV as having unsaved edits."""
+        self._dirty = True
