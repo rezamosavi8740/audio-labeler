@@ -12,6 +12,7 @@ from code.ui.pages.new_sample import NewSamplePage
 from code.ui.pages.sample_types import SampleTypesPage
 from code.ui.pages.label_editor import LabelEditorPage
 from code.ui.pages.edit_hub import EditHubPage
+from code.ui.pages.csv_reports import CsvReportsPage   # ← NEW
 from code.ui.styles import app_qss
 
 
@@ -29,14 +30,22 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
 
         # --- Instantiate pages ---
-        self.page_home   = HomePage()          # Home (4 cards)
-        self.page_new    = NewSamplePage()     # Step 1: metadata
-        self.page_specs  = SampleTypesPage()   # Sample Types & Specs (CSV editable)
-        self.page_labels = LabelEditorPage()   # Step 2: attach & label
-        self.page_edit   = EditHubPage()       # Hub for editing existing samples
+        self.page_home    = HomePage()          # Home (4 cards)
+        self.page_new     = NewSamplePage()     # Step 1: metadata (supports create/edit)
+        self.page_specs   = SampleTypesPage()   # Sample Types & Specs (CSV editable)
+        self.page_labels  = LabelEditorPage()   # Step 2: attach & label
+        self.page_edit    = EditHubPage()       # Hub for editing existing samples
+        self.page_reports = CsvReportsPage()    # CSV Reports (export)
 
         # --- Add pages to router ---
-        for p in (self.page_home, self.page_new, self.page_specs, self.page_labels, self.page_edit):
+        for p in (
+            self.page_home,
+            self.page_new,
+            self.page_specs,
+            self.page_labels,
+            self.page_edit,
+            self.page_reports,
+        ):
             self.stack.addWidget(p)
 
         # --- Navigation wiring ---
@@ -50,8 +59,8 @@ class MainWindow(QMainWindow):
         # Home -> Edit hub
         self.page_home.sig_edit_sample.connect(self._open_edit_hub)
 
-        # (Placeholder for reports)
-        self.page_home.sig_csv_reports.connect(self._todo_csv_reports)
+        # Home -> CSV Reports
+        self.page_home.sig_csv_reports.connect(self._open_csv_reports)
 
         # Step 1 -> Home
         self.page_new.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
@@ -68,11 +77,14 @@ class MainWindow(QMainWindow):
         # Edit hub -> Home
         self.page_edit.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
 
-        # Edit hub -> Metadata
+        # Edit hub -> Metadata (open Step 1 in edit mode)
         self.page_edit.sig_edit_metadata.connect(self._open_edit_metadata)
 
-        # Edit hub -> Labels
+        # Edit hub -> Labels (open Step 2)
         self.page_edit.sig_edit_labels.connect(self._open_edit_labels)
+
+        # Reports -> Home
+        self.page_reports.sig_go_home.connect(lambda: self.stack.setCurrentWidget(self.page_home))
 
         # --- Global stylesheet ---
         self.setStyleSheet(app_qss)
@@ -84,20 +96,28 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.page_labels)
 
     def _open_edit_hub(self):
-        self.page_edit.open()
+        """Open EditHub and refresh its view."""
+        # Ensure EditHub has the optional public `open()` to refresh search/table.
+        if hasattr(self.page_edit, "open"):
+            self.page_edit.open()
         self.stack.setCurrentWidget(self.page_edit)
 
     def _open_edit_metadata(self, sample_id: str):
+        """Open Step 1 in edit mode for the chosen sample_id."""
+        # Your NewSamplePage should expose open_for_edit(sample_id: str)
         self.page_new.open_for_edit(sample_id)
         self.stack.setCurrentWidget(self.page_new)
 
     def _open_edit_labels(self, sample_id: str):
+        """Open Step 2 (Label Editor) for the chosen sample_id."""
         self.page_labels.open_for(sample_id)
         self.stack.setCurrentWidget(self.page_labels)
 
-    def _todo_csv_reports(self):
-        """Placeholder for a future reports/export page."""
-        self.stack.setCurrentWidget(self.page_home)
+    def _open_csv_reports(self):
+        """Open CSV Reports page and refresh both tabs."""
+        if hasattr(self.page_reports, "open"):
+            self.page_reports.open()
+        self.stack.setCurrentWidget(self.page_reports)
 
 
 def main():
